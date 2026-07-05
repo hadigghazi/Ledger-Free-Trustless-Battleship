@@ -1,0 +1,29 @@
+# Fly.io deployment for the relay — the ONLY cloud-hosted piece.
+#
+#   fly launch --copy-config --no-deploy   # once, from the repo root
+#   fly deploy --config relay/fly.toml --dockerfile relay/Dockerfile
+#
+# The relay forwards public messages (commitments, shots, proof receipts)
+# between the two players. It never sees a board, holds no keys, and cannot
+# forge a proof, so the host it runs on needs no trust.
+
+app = "zk-battleship-relay"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "9000"
+
+[[services]]
+  internal_port = 9000
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 9000
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 200
+    soft_limit = 150

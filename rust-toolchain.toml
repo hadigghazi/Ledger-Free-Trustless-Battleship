@@ -1,0 +1,4 @@
+# The HOST builds with stable Rust. The GUEST is built with the RISC Zero
+# toolchain that `rzup` installs and selects automatically during the build.
+[toolchain]
+channel = "stable"

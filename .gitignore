@@ -1,0 +1,15 @@
+# Rust
+/target
+**/target
+
+# Node / Next.js
+web/node_modules/
+web/.next/
+web/out/
+web/tsconfig.tsbuildinfo
+*.log
+
+# LaTeX build artifacts (the compiled paper PDF is kept)
+docs/paper/*.aux
+docs/paper/*.out
+docs/paper/*.toc

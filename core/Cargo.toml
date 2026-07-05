@@ -1,0 +1,9 @@
+[package]
+name = "zk-battleship-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared, toolchain-independent game logic for ZK Battleship (host + guest)."
+license = "MIT"
+
+[dependencies]
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

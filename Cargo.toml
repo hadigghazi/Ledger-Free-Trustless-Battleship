@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["core", "host", "methods", "relay"]
+# `methods/guest` is intentionally NOT a workspace member: it is compiled for
+# the RISC-V target by risc0-build, not by the host toolchain.
+# `relay` is a standalone WebSocket message relay with NO dependency on the
+# game logic or RISC Zero — it only forwards public messages between players.
+
+[workspace.package]
+edition = "2021"
+
+# Build the (expensive) guest in release even for debug host builds.
+[profile.dev.build-override]
+opt-level = 3
+[profile.release.build-override]
+opt-level = 3

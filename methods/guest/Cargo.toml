@@ -1,0 +1,23 @@
+[package]
+name = "guest"
+version = "0.1.0"
+edition = "2021"
+
+# Detach the guest from the parent workspace: it is built for the riscv32im
+# target by risc0-build, not by the host workspace.
+[workspace]
+
+[[bin]]
+name = "commit_board"
+path = "src/bin/commit_board.rs"
+
+[[bin]]
+name = "prove_shot"
+path = "src/bin/prove_shot.rs"
+
+[dependencies]
+risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
+zk-battleship-core = { path = "../../core" }
+
+[profile.release]
+lto = true

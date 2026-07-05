@@ -1,0 +1,16 @@
+[package]
+name = "relay"
+version = "0.1.0"
+edition = "2021"
+description = "Dumb WebSocket relay for ZK Battleship online play — forwards only public messages between two players; never sees boards, never proves or verifies."
+
+[[bin]]
+name = "zk-battleship-relay"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "signal"] }
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
