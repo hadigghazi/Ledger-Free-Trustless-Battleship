@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this software or build on the protocol, please cite it as below."
+type: software
+title: "Ledger-Free Trustless Battleship: Self-Contained Zero-Knowledge Shot Proofs with Public-History Binding"
+authors:
+  - family-names: "Ghazi"
+    given-names: "Hadi"
+    email: "hadigghazi@gmail.com"
+version: "v1.0.0"
+date-released: "2026-07-05"
+doi: "10.5281/zenodo.21207531"
+repository-code: "https://github.com/hadigghazi/Ledger-Free-Trustless-Battleship"
+license: MIT
+keywords:
+  - zero-knowledge proofs
+  - zkVM
+  - RISC Zero
+  - STARK
+  - commitment schemes
+  - imperfect-information games
+  - battleship
+preferred-citation:
+  type: report
+  title: "Ledger-Free Trustless Battleship: Self-Contained Zero-Knowledge Shot Proofs with Public-History Binding"
+  authors:
+    - family-names: "Ghazi"
+      given-names: "Hadi"
+  year: 2026
+  month: 7
+  doi: "10.5281/zenodo.21207531"
+  url: "https://github.com/hadigghazi/Ledger-Free-Trustless-Battleship/blob/main/docs/paper/zk-battleship.pdf"

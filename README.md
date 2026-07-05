@@ -1,5 +1,9 @@
 # ZK Battleship — trustless Battleship without a blockchain
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21207531.svg)](https://doi.org/10.5281/zenodo.21207531)
+[![Release](https://img.shields.io/github/v/release/hadigghazi/Ledger-Free-Trustless-Battleship)](https://github.com/hadigghazi/Ledger-Free-Trustless-Battleship/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A Battleship game where **cheating is cryptographically impossible** — with no
 blockchain, no trusted server, and no honor system. Each player commits to a
 secret board before the game, and every answer during the game ("hit", "miss",
