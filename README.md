@@ -45,7 +45,7 @@ on a **blockchain**, and let the contract decide when the game ends. Remove
 the chain naively and a hole opens up: "sunk" and "you win" depend on the
 *history* of shots, and if the prover picks the history, a losing player can
 simply never be provably defeated.
-
+ 
 This implementation closes that hole without a ledger: every shot proof binds
 the **full public shot history** into its journal, and the verifier — who
 fired those shots and therefore knows the true sequence — rejects any proof
