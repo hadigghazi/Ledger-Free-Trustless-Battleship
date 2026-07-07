@@ -48,271 +48,267 @@
 
 \begin{abstract}
 \noindent
-Zero-knowledge proofs let players of imperfect-information games answer
-questions about hidden state --- ``hit or miss?'' --- without revealing that
-state and without being able to lie. Every deployed zero-knowledge Battleship
-system we are aware of anchors the \emph{public} game state (the shot
-history, the turn order, the win condition) on a blockchain, inheriting its
-latency, cost, and infrastructure. We show that the obvious ledger-free port
-of these protocols is unsound: if the prover supplies the shot history that
-``sunk'' and ``you win'' are computed from, a losing player can misreport
-sunk ships and postpone provable defeat indefinitely, while producing proofs
-that verify. We give a simple fix with a useful general shape: every per-shot
-proof echoes the complete public shot history into its public output, and the
-verifier --- who fired exactly those shots --- checks it against its own
-record. Because in a two-player turn-based game each verifier locally
-possesses the canonical public state it needs, no consensus layer is
-required. Sunk detection and the win condition are computed inside the proof
-from the bound history, so match transcripts become independently auditable
-end-to-end, including termination. We implement the protocol on the RISC~Zero
-zkVM as an open-source, peer-to-peer system --- a local prover agent and
-browser interface per player, connected by an untrusted message relay --- with
-a Blum coin flip for the first move, compile-time--disabled mock proving, and
-guest programs hardened to witness-independent instruction traces. On a
-commodity laptop CPU, a shot proof takes 30--47\,s to produce and
-$\approx$30\,ms to verify, making the system playable at a relaxed
-turn-based pace with no hardware acceleration and no infrastructure beyond
-a dumb message pipe.
+Zero-knowledge proofs let the players of an imperfect-information game answer
+questions about hidden state, such as whether a shot in Battleship is a hit or
+a miss, without revealing the state and without the ability to answer
+dishonestly. The zero-knowledge Battleship implementations we are aware of all
+keep the public game state, meaning the shot history, the turn order and the
+win condition, on a blockchain, and inherit its latency, its cost and its
+reliance on external infrastructure. This paper shows that the straightforward
+attempt to drop the ledger is unsound. When the party producing a proof also
+supplies the shot history against which ``sunk'' and ``you win'' are evaluated,
+a losing player can misreport sunk ships and defer a provable loss for as long
+as it likes while still producing proofs that verify. The correction is to bind
+the public shot history into the public output of every shot proof. The
+verifier fired exactly the shots in that history and can compare it against its
+own record, so in a two-player turn-based game no consensus layer is needed to
+fix the canonical public state. Sunk detection and the win condition are then
+computed inside the proof from the bound history, which makes a whole match,
+including the moment it ends, independently checkable from its transcript. We
+implement the protocol on the RISC~Zero zkVM as an open-source peer-to-peer
+system in which each player runs a local prover and browser interface and the
+two are joined by an untrusted message relay. The first move is settled by a
+Blum coin flip, mock proving is removed at compile time, and the in-circuit
+game logic runs with a control flow that does not depend on the secret board.
+On a commodity laptop CPU a shot proof takes between 30 and 47\,s to generate
+and about 30\,ms to verify, which is fast enough for turn-based play without
+special hardware.
 \end{abstract}
 
 \section{Introduction}
 \label{sec:intro}
 
-Battleship is played on trust. Each player privately places a fleet on a
-$10\times10$ grid; opponents call shots and are told ``hit'' or ``miss'' by
-the only party able to see the board. Nothing in the rules prevents a player
-from quietly relocating ships mid-game or denying that a ship was sunk; the
-game works between friends and fails between adversaries.
+Battleship is a game played on trust. Each player secretly arranges a fleet on
+a $10\times10$ grid, the opponent calls out coordinates, and the player holding
+the board reports each shot as a hit or a miss. Since only that player can see
+the board, nothing stops them from moving a ship out of the way during the game
+or refusing to admit that a ship has sunk. This is acceptable among friends but
+offers no protection against an opponent who is willing to cheat.
 
-Cryptography removes the trust assumption. A player can \emph{commit} to a
-board before the game and then, for every shot, produce a
+Cryptography removes the need to trust the opponent. Before play begins a player
+can \emph{commit} to a board, and can then answer each shot with a
 \emph{zero-knowledge proof} that the answer is consistent with the committed
-board --- revealing nothing else about it. This commit-and-prove pattern is
-folklore by now and has been implemented for Battleship several times: with
-hand-written arithmetic circuits verified by an Ethereum contract
-\cite{battlezips,mit6857}, with a zkVM posting proofs to the NEAR blockchain
-\cite{risc0battleship}, and as demonstration applications on
-privacy-oriented chains \cite{aleobattleship,minabattleship}. The pattern of
-hiding game state behind commitments and proving actions against it also
-powers the on-chain game Dark Forest \cite{darkforest}.
+board while disclosing nothing else about it. The commit-and-prove approach is
+by now standard, and Battleship has been built on it several times: with
+hand-written arithmetic circuits checked by an Ethereum contract
+\cite{battlezips,mit6857}, with a zkVM that posts proofs to the NEAR blockchain
+\cite{risc0battleship}, and as sample applications on privacy-oriented chains
+\cite{aleobattleship,minabattleship}. The same idea of hiding state behind
+commitments and proving that actions respect it underlies the on-chain game
+Dark Forest \cite{darkforest}.
 
-All of these systems share one structural decision: the \emph{public} part of
-the game state --- which cells have been fired at, whose turn it is, how many
-hits have landed, and therefore who has won --- lives on a blockchain, and a
-smart contract acts as referee for everything that is not secret. The chain
-contributes no secrecy (commitments and proofs do that); what it contributes
-is an \emph{authoritative public history}. That contribution is easy to
-overlook, and removing the chain without replacing it breaks the protocol in
-a way that has nothing to do with the zero-knowledge machinery
-(Section~\ref{sec:problem}): the statements ``this shot sank a ship'' and
-``I have lost'' are functions of the shot history, and if the prover chooses
-the history, those statements become unfalsifiable. A losing player can
-produce perfectly valid proofs forever and simply never be provably defeated
---- we call this the \emph{immortal fleet}.
+These systems share one design choice. The public part of the game state, which
+cells have been fired on, whose turn it is, how many hits have landed and hence
+who has won, is kept on a blockchain, and a smart contract adjudicates
+everything that is not secret. The chain adds no secrecy, since the commitments
+and proofs already provide that. What it adds is an authoritative public
+history. This role is easy to miss, and a protocol that removes the chain
+without supplying a substitute fails for a reason that has nothing to do with
+the zero-knowledge machinery (Section~\ref{sec:problem}). The predicates ``this
+shot sank a ship'' and ``I have lost'' both depend on the shot history, so a
+prover free to choose that history can make them come out however it likes. A
+losing player can keep producing valid proofs indefinitely and never be shown
+to have lost. We call this the \emph{immortal fleet}.
 
-This paper develops and evaluates a Battleship protocol with no ledger, no
-referee, and no trusted party of any kind, in which the complete game ---
-including its \emph{termination} --- is verifiable. The technical core is a
-modest but, to our knowledge, previously unexploited observation:
+This paper presents and evaluates a Battleship protocol that uses no ledger, no
+referee and no trusted third party, and in which the whole game, its ending
+included, can be verified. It rests on the following observation, which as far
+as we know has not been used before. In a two-party turn-based game, the public
+state a verifier needs in order to check a proof about the opponent's hidden
+board is just the sequence of shots the verifier itself has fired, and the
+verifier already holds that sequence. Binding it into the public output of each
+proof therefore does the work that the ledger did.
 
-\begin{quote}
-\emph{In a two-player turn-based game, the public state a verifier needs in
-order to check a proof about an opponent's hidden state is exactly the
-sequence of the verifier's own past moves --- which the verifier already
-knows. Binding that sequence into each proof's public output replaces the
-ledger.}
-\end{quote}
-
-Concretely, every shot proof in our protocol takes the full public history of
-shots fired at the responding player as input, recomputes the commitment from
-the private board (locking the player to one board for the whole game),
-computes hit/miss, sunk, and \emph{defeated} from board $\cup$ history inside
-the proof, and echoes the history into the proof's public journal. The
-verifier accepts only if the echoed history equals, element for element, the
-shots it actually fired. Each receipt is therefore \emph{self-contained}:
-a third party given the two commitment receipts and the ordered shot receipts
-can re-verify an entire match, including who won, with no other information
---- the history fields chain the receipts to one another
-(Section~\ref{sec:audit}).
+Concretely, each shot proof takes as input the full public history of shots
+fired at the responding player, recomputes the commitment from the private
+board so that the player is tied to one board for the whole game, evaluates the
+hit, sunk and defeated predicates from the board together with the history, and
+writes the history into the proof's public output. The verifier accepts the
+proof only when the history it contains matches, in order and element by
+element, the shots the verifier actually fired. Every receipt is then
+self-contained: given the two commitment receipts and the ordered shot
+receipts, an outside party can re-verify a complete match and determine the
+winner with nothing else to go on, because the history fields link the receipts
+to one another (Section~\ref{sec:audit}).
 
 \paragraph{Contributions.}
 \begin{enumerate}[noitemsep,topsep=2pt]
-  \item We identify the \emph{public-history binding problem} for ledger-free
-        commit-and-prove games and give concrete attacks on the natural
-        chain-free protocol, including sunk-report forgery and indefinite
-        defeat postponement (Section~\ref{sec:problem}).
-  \item We specify a complete two-party protocol --- board commitment with
-        an in-proof legality check, a Blum commit-reveal coin flip
-        \cite{blum} for the first move, history-bound shot proofs, and an
-        in-proof win condition --- and analyse its security properties and
-        their reductions (Sections~\ref{sec:protocol}--\ref{sec:security}).
-  \item We implement the protocol on the RISC~Zero zkVM \cite{risc0} in a
-        deliberately trust-minimised deployment: each player runs a local
-        prover agent and browser UI; an untrusted stateless relay forwards
-        only public messages; mock proving is disabled at compile time; and
-        all code that touches the secret board executes a fixed-shape
-        instruction trace so that proving time does not leak board
-        information (Section~\ref{sec:impl}). The implementation is open
-        source.
-  \item We evaluate on a commodity laptop CPU: proving and verification
-        times, receipt sizes (composite and succinct), the effect of history
-        length, and an empirical check of witness-independence
-        (Section~\ref{sec:eval}).
+  \item We describe the \emph{public-history binding problem} for ledger-free
+        commit-and-prove games and give explicit attacks against the naive
+        chain-free protocol, covering forged sunk reports and unbounded
+        postponement of defeat (Section~\ref{sec:problem}).
+  \item We give a complete two-party protocol, consisting of a board commitment
+        with an in-proof legality check, a Blum commit-reveal coin flip
+        \cite{blum} for the first move, history-bound shot proofs and an
+        in-proof win condition, and we analyse its security properties
+        (Sections~\ref{sec:protocol}--\ref{sec:security}).
+  \item We implement the protocol on the RISC~Zero zkVM \cite{risc0} with a
+        deliberately small trust footprint: each player runs a local prover and
+        browser UI, an untrusted stateless relay forwards only public messages,
+        mock proving is compiled out, and every routine that reads the secret
+        board runs a fixed-shape instruction sequence so that proving time
+        reveals nothing about the board (Section~\ref{sec:impl}). The code is
+        open source.
+  \item We report measurements on a commodity laptop CPU: proving and
+        verification times, receipt sizes for both composite and succinct
+        receipts, the dependence on history length, and an empirical test of
+        witness-independence (Section~\ref{sec:eval}).
 \end{enumerate}
 
-We stress what is \emph{not} claimed. The commit-and-prove structure for
-Battleship is not new; our contribution is removing the ledger while keeping
---- and extending, via proven termination --- the integrity guarantees, plus
-an engineering-complete artifact and measurements. Zero-knowledge proofs also
-cannot force a player to keep playing; aborts remain possible, as in every
-prior system, and we discuss the boundary in Section~\ref{sec:limits}.
+We are explicit about what is not new here. The commit-and-prove structure for
+Battleship predates this work. The contribution is to remove the ledger while
+preserving the integrity guarantees and, through proven termination, slightly
+strengthening them, and to provide a complete implementation with measurements.
+Zero-knowledge proofs cannot compel a player to keep playing, so aborts remain
+possible exactly as in the earlier systems; Section~\ref{sec:limits} treats
+this boundary.
 
 \section{Background}
 \label{sec:background}
 
 \paragraph{Commitments.}
 A commitment scheme lets a party fix a value $v$ by publishing $c =
-\mathsf{Com}(v; r)$ such that $c$ reveals nothing about $v$ (\emph{hiding})
-and cannot later be opened to $v' \neq v$ (\emph{binding}). We use the
-standard salted-hash commitment $\C = \mathrm{SHA\mbox{-}256}(\mathsf{encode}(B) \,\|\, s)$
-over a canonical board encoding and a fresh 256-bit salt $s$; binding follows
-from collision resistance, hiding from the unpredictability of the salted
-preimage (a random-oracle--style assumption standard for this construction).
+\mathsf{Com}(v; r)$ that reveals nothing about $v$ (\emph{hiding}) and cannot
+later be opened to any $v' \neq v$ (\emph{binding}). We use the standard
+salted-hash commitment $\C = \mathrm{SHA\mbox{-}256}(\mathsf{encode}(B) \,\|\, s)$
+over a canonical board encoding and a fresh 256-bit salt $s$. Binding rests on
+collision resistance and hiding on the unpredictability of the salted preimage,
+which is the usual random-oracle-style assumption for this construction.
 
 \paragraph{Zero-knowledge proofs and zkVMs.}
-A zero-knowledge proof \cite{gmr} convinces a verifier that a statement is
-true while revealing nothing beyond its truth; proof systems with succinct,
-non-interactive proofs \cite{groth16,starks} make the pattern practical for
-applications. A \emph{zkVM} generalises circuit-level proving to whole
-programs: the prover executes a program on private inputs and emits a proof
-of correct execution. RISC~Zero \cite{risc0} proves execution of RISC-V
-binaries with a STARK \cite{starks}; a proving run yields a \emph{receipt}
-containing a \emph{journal} (the public outputs the program chose to commit)
-and a \emph{seal} (the proof). Verification checks the seal against an
-\emph{image ID} --- a digest of the exact guest binary --- so a verifying
-party learns that \emph{that specific program} ran and produced \emph{that
-journal}, and nothing else. Comparable systems include SP1 \cite{sp1} and
-Jolt \cite{jolt}; surveys and performance studies of the zkVM landscape
-appear in \cite{zkpsurvey,zkvmcompilers}.
+A zero-knowledge proof \cite{gmr} convinces a verifier that a statement holds
+without revealing anything beyond its truth, and modern succinct
+non-interactive systems \cite{groth16,starks} make this practical for real
+applications. A \emph{zkVM} lifts proving from circuits to ordinary programs:
+the prover runs a program on private inputs and produces a proof that it
+executed correctly. RISC~Zero \cite{risc0} proves the execution of RISC-V
+binaries using a STARK \cite{starks}. A proving run produces a \emph{receipt}
+made of a \emph{journal}, which holds the public outputs the program chose to
+commit, and a \emph{seal}, which is the proof itself. Verification checks the
+seal against an \emph{image ID}, a digest of the exact guest binary, so a
+verifier learns that this particular program ran and produced this particular
+journal, and learns nothing further. SP1 \cite{sp1} and Jolt \cite{jolt} are
+comparable systems; \cite{zkpsurvey,zkvmcompilers} survey and benchmark the
+landscape.
 
 \paragraph{Battleship.}
-Two players secretly place one ship each of lengths $5,4,3,3,2$ (17 cells) on
-a $10\times10$ grid; ships are straight, axis-aligned, in bounds, and
-non-overlapping (touching is allowed). Players alternate firing at cells of
-the opponent's grid and are told hit or miss; when all cells of a ship have
-been hit it is announced sunk; a player whose 17 ship cells are all hit
-loses. We additionally impose the (standard-practice) rule that each cell may
-be targeted at most once per board, which bounds a game at 100 shots per
-side and, in our protocol, keeps both parties' history sequences in lockstep.
+Two players each place one ship of every length in $\{5,4,3,3,2\}$, seventeen
+cells in all, on a $10\times10$ grid. Ships are straight, axis-aligned, within
+bounds and non-overlapping, and touching is permitted. Players take turns
+naming a cell of the opponent's grid and learn whether it is a hit or a miss. A
+ship is announced sunk once all of its cells have been hit, and a player who
+has had all seventeen ship cells hit loses. We add the common rule that a cell
+may be fired on at most once per board. This caps a game at 100 shots per side
+and, in our protocol, keeps the two players' history sequences aligned.
 
 \section{Related work}
 \label{sec:related}
 
-Cryptographic protocols for games predate practical ZK proofs: mental poker
-\cite{sra81} dealt cards between mutually distrusting parties, and the
-completeness theorems for secure computation \cite{gmw87} imply in principle
-that \emph{any} game can be played fairly. What has changed is practicality:
-succinct proof systems and zkVMs make per-move proving affordable.
+Cryptographic treatments of games are older than practical zero-knowledge
+proofs. Mental poker \cite{sra81} dealt a deck between mutually distrusting
+players, and the completeness theorems for secure computation \cite{gmw87} show
+that in principle any game can be played fairly. What has changed since is
+practicality: succinct proofs and zkVMs have made per-move proving cheap enough
+to use.
 
-\emph{On-chain ZK Battleship.} BattleZips \cite{battlezips} (circom/Groth16)
-proves board legality at placement and hit/miss per shot; an Ethereum
-contract enforces turn order, stores declared shots, counts the 17 hits that
-end the game, and is the root of trust for all public state. The MIT 6.857
-project \cite{mit6857} (circom/snarkjs on Ethereum) proves that each reported
-hit/miss is consistent with the hashed board; notably it does \emph{not}
-prove board legality at placement --- a player can commit a malformed board
---- and the win condition is again contract-side hit counting. RISC~Zero's
-own example \cite{risc0battleship} moved the circuits into a zkVM with game
-state in a NEAR contract; it is unmaintained and predates modern receipt
-formats. Aleo and Mina host similar demonstrations \cite{aleobattleship,
-minabattleship}. In all of these, removing the chain removes the component
-that fixes the public history; this paper is about what must replace it.
+\emph{On-chain ZK Battleship.} BattleZips \cite{battlezips}, built on circom
+and Groth16, proves board legality at placement and hit-or-miss on each shot,
+while an Ethereum contract enforces turn order, records declared shots, counts
+the seventeen hits that end the game, and is the root of trust for all public
+state. The MIT 6.857 project \cite{mit6857}, using circom and snarkjs on
+Ethereum, proves that each reported result is consistent with the hashed board
+but, unlike BattleZips, does not prove that the committed board is legal, so a
+player may commit a malformed board; the win condition is again computed by the
+contract. RISC~Zero's own example \cite{risc0battleship} put the logic in a
+zkVM but stored game state in a NEAR contract, and is now unmaintained and
+built against an old receipt format. Aleo and Mina host comparable
+demonstrations \cite{aleobattleship,minabattleship}. In each case the chain is
+what pins the public history, and this paper is about what takes its place once
+the chain is gone.
 
-\emph{Off-chain ZK gaming.} Dark Forest \cite{darkforest} pioneered
-commitment-hidden state in a deployed game, still with an on-chain core.
-State-channel constructions \cite{statechannels,hawk} move interaction
-off-chain between on-chain checkpoints, and ``ZK state channels'' have been
-sketched for turn-based games; they still assume a chain for disputes and
-settlement. Our setting is stricter --- there is no chain at any layer ---
-and our observation is that for two-player turn-based games none is needed
-for \emph{integrity}, only for remedies against abort
-(Section~\ref{sec:limits}).
+\emph{Off-chain ZK gaming.} Dark Forest \cite{darkforest} was the first
+deployed game to hide state behind commitments, though its core still runs
+on-chain. State-channel constructions \cite{statechannels,hawk} carry out
+interaction off-chain between on-chain checkpoints, and ``ZK state channels''
+have been proposed for turn-based games, but they still rely on a chain to
+settle disputes. Our setting is more restrictive, in that no chain is present
+at any layer, and the point we make is that for two-player turn-based games a
+chain is unnecessary for integrity and is useful only as a remedy against
+aborts (Section~\ref{sec:limits}).
 
-\emph{Fair coin flipping.} We use Blum's classic commit-reveal protocol
-\cite{blum} to choose the first mover; its known limitation (the last
-revealer may abort on an unfavourable outcome) is subsumed by the abort
-non-guarantee that any ZK game protocol already carries.
+\emph{Fair coin flipping.} The first move is chosen with Blum's commit-reveal
+protocol \cite{blum}. Its familiar weakness, that the party revealing last can
+abort after seeing an unfavourable result, is already covered by the fact that
+any zero-knowledge game protocol permits aborts.
 
 \section{The public-history binding problem}
 \label{sec:problem}
 
-Consider the natural ledger-free protocol, which is also (up to notation) the
-protocol implemented by the systems above with the contract deleted. Let
-player $P$ hold board $B$ and salt $s$ with published commitment
-$\C = H(\mathsf{encode}(B)\|s)$.
+Consider the natural ledger-free protocol, which up to notation is what the
+systems above become once the contract is removed. Player $P$ holds a board $B$
+and salt $s$ and has published the commitment $\C = H(\mathsf{encode}(B)\|s)$.
 
 \begin{itemize}[noitemsep,topsep=2pt]
 \item \textbf{Setup proof.} $P$ proves knowledge of a \emph{legal} $B$ and
       $s$ with $H(\mathsf{encode}(B)\|s) = \C$; the journal is $\C$.
 \item \textbf{Naive shot proof.} On shot $x$, $P$ proves: ``for the $B,s$
       behind $\C$: $\mathit{hit} = \mathsf{occ}(B,x)$, and
-      $\mathit{sunk} = \mathsf{sunk}(B, x, \mathcal{H})$'' where
-      $\mathcal{H}$ is the set of shots previously fired at $P$ ---
-      \emph{supplied by $P$ as a private input}. The journal is
+      $\mathit{sunk} = \mathsf{sunk}(B, x, \mathcal{H})$'', where
+      $\mathcal{H}$ is the set of shots previously fired at $P$, supplied by
+      $P$ as a private input. The journal is
       $(\C, x, \mathit{hit}, \mathit{sunk})$.
 \end{itemize}
 
-The hit bit is sound: it depends only on $B$ and $x$, both bound by the
-journal. Everything that depends on $\mathcal{H}$ is not, because the
-verifier has no way to know which $\mathcal{H}$ the statement was evaluated
-on. Three concrete attacks follow.
+The hit bit is sound, since it is a function of $B$ and $x$ alone and both are
+bound by the journal. Nothing that depends on $\mathcal{H}$ is sound, because
+the verifier cannot tell which $\mathcal{H}$ the statement was evaluated
+against. This gives three attacks.
 
-\paragraph{A1: Sunk suppression.} On the shot that completes a ship, a
-malicious responder proves against $\mathcal{H}' \subsetneq \mathcal{H}$
-(e.g.\ omitting one earlier hit). The proof verifies, reports
-$\mathit{hit}=\textsf{true}$, $\mathit{sunk}=\bot$, and the attacker's fleet
-status is misrepresented. In fleet variants where sunk announcements drive
-strategy, this is a material advantage; the attack cost is zero.
+\paragraph{A1: Sunk suppression.} On the shot that would complete a ship, a
+dishonest responder proves against a history $\mathcal{H}' \subsetneq
+\mathcal{H}$ that omits an earlier hit. The proof verifies and reports
+$\mathit{hit}=\textsf{true}$, $\mathit{sunk}=\bot$, so the true state of the
+responder's fleet is hidden. Where sunk announcements affect strategy this is a
+real advantage, and it costs the attacker nothing.
 
-\paragraph{A2: Phantom sunk.} Symmetrically, the responder pads
-$\mathcal{H}'$ with shots never fired, causing a ship to be reported sunk
-early --- useful for feigning weakness, or for confusing opponents that
-track sunk counts.
+\paragraph{A2: Phantom sunk.} In the other direction, the responder adds to
+$\mathcal{H}'$ shots that were never fired, so that a ship is announced sunk
+before it should be. This can be used to feign weakness or to disrupt an
+opponent who is tracking sunk counts.
 
 \paragraph{A3: The immortal fleet.} The win condition is
-$\mathsf{allsunk}(B, \mathcal{H})$. Whatever party computes it needs
-$\mathcal{H}$; without a ledger, implementations must either trust the
-loser's client to announce defeat (self-reporting) or have the winner's
-client count sunk reports --- which A1 already corrupts. A losing player
-therefore never becomes \emph{provably} defeated: they can answer every shot
-with a valid proof, suppress the final sunk reports, and the game never
-ends. No cryptographic assumption is violated; the statements being proven
-are simply about a history nobody agreed on. Notably, the pre-revision
-version of our own implementation had exactly this flaw --- defeat was a
-self-reported boolean computed outside any proof --- which is what prompted
-this analysis.
+$\mathsf{allsunk}(B, \mathcal{H})$, and whoever evaluates it needs
+$\mathcal{H}$. Without a ledger, an implementation must either believe the
+loser's client when it declares defeat or have the winner's client tally sunk
+reports, and A1 already undermines the latter. A losing player is therefore
+never \emph{provably} beaten: it can answer every shot with a valid proof,
+withhold the last sunk reports, and the game simply does not end. No
+cryptographic assumption fails; the proofs are true statements about a history
+that was never agreed upon. An earlier version of our own implementation had
+precisely this defect, with defeat recorded as a self-reported boolean outside
+any proof, and that is what led us to the present analysis.
 
-On-chain systems do not exhibit A1--A3 because the contract is the history:
-shots are transactions, and hit counting happens in consensus. The question
-is what replaces the contract when there is no chain.
+On-chain systems avoid A1 through A3 because the contract is the history: shots
+are transactions and hits are counted in consensus. The problem is to find what
+plays that role when no chain is present.
 
-\paragraph{The observation.} In a two-player turn-based game, the history
-$\mathcal{H}$ relevant to proofs about $P$'s board is precisely the sequence
-of shots \emph{fired by the opponent $V$} --- and $V$, the verifier of those
-proofs, chose and remembers every element of it. The canonical public state
-is already local to the party that needs it; it requires binding, not
-consensus. This suggests the fix: make $\mathcal{H}$ part of the
-\emph{statement} rather than the witness, by echoing it into the journal, and
-let $V$ compare it with its own record.
+\paragraph{The observation.} In a two-player turn-based game the history
+$\mathcal{H}$ that matters for proofs about $P$'s board is exactly the sequence
+of shots fired by the opponent $V$, and $V$ is the party verifying those proofs
+and has chosen and recorded every one of them. The canonical public state
+already sits with the party that needs it, so it calls for binding rather than
+consensus. The fix follows: move $\mathcal{H}$ from the witness into the
+statement by writing it into the journal, and have $V$ check it against its own
+record.
 
 \section{The protocol}
 \label{sec:protocol}
 
-We now specify the protocol as implemented. $H$ is SHA-256.
-$\mathsf{encode}(B)$ lists the five ships sorted by a canonical ship id, each
-as (id, row, col, orientation), 4 bytes per ship, followed by the 32-byte
-salt; commitments are therefore well-defined independent of placement listing
-order.
+We now describe the protocol as implemented. $H$ is SHA-256, and
+$\mathsf{encode}(B)$ lists the five ships sorted by a canonical ship
+identifier, each as (id, row, col, orientation) in 4 bytes, followed by the
+32-byte salt, so that the commitment does not depend on the order in which
+placements happen to be listed.
 
 \subsection{Setup}
 
@@ -326,27 +322,28 @@ Each player $P \in \{A, B\}$:
       $R^{\mathsf{com}}_P$;
 \item samples a coin nonce $n_P \leftarrow \{0,1\}^{256}$ and sends
       $(\C_P, R^{\mathsf{com}}_P, H(n_P))$ to the opponent;
-\item on receiving the opponent's tuple: verifies $R^{\mathsf{com}}$ against
-      the pinned \textsf{commit} image ID, checks the journal equals the
-      claimed $\C$, and rejects a mirrored commitment $\C = \C_P$ (a
-      copied commitment can never be answered --- the copier lacks the
-      witness --- so games against it could only stall);
+\item on receiving the opponent's tuple, verifies $R^{\mathsf{com}}$ against
+      the pinned \textsf{commit} image ID, checks that the journal equals the
+      claimed $\C$, and rejects a mirrored commitment $\C = \C_P$ (a copied
+      commitment can never be answered, since the copier does not hold the
+      witness, so a game against it could only stall);
 \item reveals $n_P$; verifies the opponent's reveal against $H(n)$;
       the first mover is decided by the XOR parity of the two nonces
       \cite{blum}.
 \end{enumerate}
 
-An illegal board thus never enters a game: there is no receipt for it. Note
-the contrast with \cite{mit6857}, where placement legality is unproven.
+An illegal board therefore never enters a game, because no receipt exists for
+one. This is in contrast to \cite{mit6857}, where placement legality is not
+proved.
 
 \subsection{Play}
 
 Let $F_V = (x_1, \dots, x_k)$ be the ordered shots $V$ has fired at $P$ so
 far (the \emph{fired list}), maintained by $V$'s own agent. Shots must be
-pairwise distinct; $P$'s agent refuses to answer a repeated cell.
+pairwise distinct, and $P$'s agent refuses to answer a repeated cell.
 
 On $V$'s turn, $V$ sends a shot $x$. $P$ runs the \textsf{shot} guest on
-private input $(B_P, s_P)$ and public input $(\C_P, x, \mathcal{H})$ where
+private input $(B_P, s_P)$ and public input $(\C_P, x, \mathcal{H})$, where
 $\mathcal{H} = (x_1, \dots, x_k)$ is $P$'s record of shots received. The
 guest:
 \begin{enumerate}[noitemsep,topsep=2pt]
@@ -364,55 +361,55 @@ and returns the receipt. $V$ accepts iff:
 \mathsf{Verify}(R, \mathsf{id}_{\mathsf{shot}}) \;\wedge\;
 J.\C = \C_P \;\wedge\; J.x = x \;\wedge\; J.\mathcal{H} = F_V ,
 \]
-where the last check is \emph{sequence} equality against $V$'s own fired
-list, and only then appends $x$ to $F_V$. If $J.\mathit{def} =
-\textsf{true}$, $V$ has won and holds a transferable proof of it; $P$'s own
-agent reports the same bit to $P$ from the same journal, so defeat is
-simultaneously undeniable and unfakeable. Roles then swap.
+where the last conjunct is \emph{sequence} equality against $V$'s own fired
+list, and $V$ appends $x$ to $F_V$ only after accepting. When $J.\mathit{def} =
+\textsf{true}$, $V$ has won and holds a proof of the win that it can show to
+anyone; $P$'s own agent reads the same bit from the same journal, so the defeat
+is at once undeniable and impossible to fake. The roles then swap.
 
-Because both the responder's history record and the verifier's fired list
-grow by exactly the accepted shot, the two stay equal by induction; any
-divergence --- a dropped, injected, reordered, or replayed message, whether
-by the network, the relay, or a cheating peer --- makes the very next
-verification fail closed.
+Since the responder's history record and the verifier's fired list each grow by
+exactly the shot that was accepted, they remain equal by induction. Any
+divergence, whether a dropped, injected, reordered or replayed message, and
+whether caused by the network, the relay or a cheating peer, causes the next
+verification to fail.
 
 \subsection{Public auditability of transcripts}
 \label{sec:audit}
 
-Define a match transcript as the two commitment receipts plus, per
-direction, the ordered sequence of shot receipts. A third party with no
-involvement in the game can check, using only the pinned image IDs: (i)
-every receipt verifies; (ii) within a direction, receipt $k$'s journal
-history equals the shots of receipts $1..k{-}1$ (the receipts chain
-themselves --- no signatures or timestamps are needed); (iii) the last
-receipt of the losing direction carries $\mathit{def} = \textsf{true}$.
-Termination is thus not a claim by either player but a property of the
-transcript. This is the ledger-free analogue of ``the contract says the game
-ended'', and it is what the naive protocol cannot offer.
+A match transcript consists of the two commitment receipts together with, for
+each direction of play, the ordered sequence of shot receipts. An uninvolved
+third party can check, using only the pinned image IDs, that (i) every receipt
+verifies, (ii) within a direction the journal history of receipt $k$ equals the
+shots of receipts $1$ through $k-1$, so the receipts chain to one another with
+no need for signatures or timestamps, and (iii) the final receipt of the losing
+direction carries $\mathit{def} = \textsf{true}$. The end of the game is thus a
+property of the transcript rather than an assertion by a player. This is the
+ledger-free counterpart of a contract declaring the game over, and it is
+exactly what the naive protocol cannot provide.
 
 \subsection{Cost}
 
-Per shot: one proof, one verification, and a journal of
-$O(|\mathcal{H}|)$ shot entries (2 bytes each before serialization). Over a
-maximal 100-shot direction the transcript's journal overhead is
-$O(n^2) \approx 10^4$ cells' worth of bytes --- negligible against the seals
+Each shot costs one proof, one verification, and a journal holding
+$O(|\mathcal{H}|)$ shot entries at two bytes each before serialization. Across a
+full 100-shot direction the journal overhead summed over the transcript is
+$O(n^2)$, on the order of $10^4$ bytes, which is small next to the seals
 themselves (Section~\ref{sec:eval}). A running-hash binding
-($h_k = H(h_{k-1} \| x_k)$) would make journals $O(1)$ at the cost of
-requiring auditors to recompute the chain; with $n \le 100$ the plain list
-is simpler and self-describing.
+($h_k = H(h_{k-1} \| x_k)$) would reduce each journal to $O(1)$ but force an
+auditor to recompute the chain; for $n \le 100$ the explicit list is simpler
+and self-describing.
 
 \section{Security analysis}
 \label{sec:security}
 
-The adversary is a computationally bounded player who may deviate
-arbitrarily: choose any messages, any boards, any histories, abort at will.
-The relay is untrusted for everything except message delivery (it can
-observe and drop, but public messages are all it ever carries). We assume
-the collision resistance of SHA-256, the soundness and zero-knowledge of the
-RISC~Zero STARK \cite{risc0,starks}, and correctness of the $\sim$300-line
-shared rules crate, which is compiled into the guest and is the protocol's
-entire trusted rulebook (both players pin its image IDs and every
-verification checks them).
+The adversary is a computationally bounded player who may deviate however it
+wishes: it can send any messages, commit to any board, present any history, and
+abort at any time. The relay is trusted only to deliver messages; it can
+observe and drop them but never carries anything other than public data. We
+assume the collision resistance of SHA-256, the soundness and zero-knowledge of
+the RISC~Zero STARK \cite{risc0,starks}, and the correctness of the roughly
+300-line shared rules crate, which is compiled into the guest and constitutes
+the protocol's entire trusted rulebook; both players pin its image IDs and
+check them on every verification.
 
 \begin{claim}[Response soundness]
 If $V$ accepts journal $J$ for shot $x$, then except with negligible
@@ -420,22 +417,23 @@ probability there exist $B, s$ with $H(\mathsf{encode}(B)\|s) = \C_P$,
 $\mathsf{legal}(B)$, and $J.\mathit{hit}, J.\mathit{sunk}, J.\mathit{def}$
 equal to the rule functions evaluated at $(B, x, F_V)$.
 \end{claim}
-\emph{Sketch.} STARK soundness gives execution of the pinned guest on
-\emph{some} witness $(B,s)$ producing $J$; the guest's first assertion forces
-$H(\mathsf{encode}(B)\|s) = J.\C = \C_P$; legality of $B$ follows from the
-setup receipt for $\C_P$ and collision resistance (two different boards
-behind one $\C$ collide); the guest computes the rule functions on
-$(B, x, J.\mathcal{H})$ by construction, and $V$'s check $J.\mathcal{H} =
-F_V$ substitutes the true history. \hfill$\square$
+\emph{Sketch.} STARK soundness gives an execution of the pinned guest on some
+witness $(B,s)$ that produces $J$. The guest's first assertion forces
+$H(\mathsf{encode}(B)\|s) = J.\C = \C_P$, and legality of $B$ follows from the
+setup receipt for $\C_P$ together with collision resistance, since two distinct
+boards behind one $\C$ would be a collision. The guest evaluates the rule
+functions on $(B, x, J.\mathcal{H})$ by construction, and $V$'s check
+$J.\mathcal{H} = F_V$ replaces the journal's history with the true one.
+\hfill$\square$
 
 \begin{claim}[Board binding across the match]
 All accepted journals for commitment $\C_P$ are consistent with a single
 board $B$, except with negligible probability.
 \end{claim}
-\emph{Sketch.} Each accepted journal is backed by a witness hashing to
-$\C_P$; two witnesses with different boards are a SHA-256 collision (the
-encoding is injective on legal boards: it lists each ship's kind, anchor,
-and orientation canonically ordered). \hfill$\square$
+\emph{Sketch.} Each accepted journal is backed by a witness that hashes to
+$\C_P$, and two witnesses carrying different boards would form a SHA-256
+collision, since the encoding is injective on legal boards: it records each
+ship's kind, anchor and orientation in a canonical order. \hfill$\square$
 
 \begin{claim}[Termination soundness and undeniability]
 $V$ obtains a transferable proof of victory exactly when
@@ -443,91 +441,92 @@ $F_V \cup \{x\}$ covers all 17 ship cells of $P$'s committed board; $P$
 cannot postpone this by any choice of messages other than refusing to
 answer.
 \end{claim}
-\emph{Sketch.} $\mathit{def}$ is computed in-guest from $(B, x,
-\mathcal{H})$ with $\mathcal{H}$ bound to $F_V$; by response soundness it
-equals the true predicate. A responder wishing to avoid $\mathit{def} =
-\textsf{true}$ must present a different history (rejected by $V$'s
-comparison), a different board (a collision), or no proof at all (an
-abort, visible as such). Attacks A1--A3 are excluded identically.
-\hfill$\square$
+\emph{Sketch.} $\mathit{def}$ is computed inside the guest from $(B, x,
+\mathcal{H})$ with $\mathcal{H}$ bound to $F_V$, so by response soundness it
+matches the true predicate. To avoid a journal with $\mathit{def} =
+\textsf{true}$, a responder would have to present a different history, which
+$V$'s comparison rejects, a different board, which is a collision, or no proof
+at all, which is an abort and is visible as one. Attacks A1 through A3 are ruled
+out in the same way. \hfill$\square$
 
 \begin{claim}[Secrecy]
 A (possibly malicious) verifier interacting with an honest prover learns
 nothing about the prover's board beyond the game-inherent information: the
 hit/miss/sunk/defeated values of the queried cells, and what those imply.
 \end{claim}
-\emph{Sketch.} The prover's messages are receipts; by the zero-knowledge
-property of the proof system the verifier's view is simulatable from the
-journals alone, and journals contain only $\C$ (hiding, by the 256-bit
-salt), the verifier's own shots, and the game-inherent bits. Note this is a
-\emph{leaky-function} guarantee by design: Battleship's answers themselves
-narrow the board hypothesis space --- that is the game --- and the protocol
-protects exactly the remainder. \hfill$\square$
+\emph{Sketch.} The prover's messages are receipts, and by the zero-knowledge
+property of the proof system the verifier's view can be simulated from the
+journals alone. Those journals contain only $\C$, which hides the board through
+the 256-bit salt, the verifier's own shots, and the game-inherent result bits.
+The guarantee is deliberately one of a leaky function: the answers in
+Battleship themselves shrink the space of possible boards, which is the game
+working as intended, and the protocol protects only what remains. \hfill$\square$
 
 \paragraph{Replay, reflection, reordering.} Journals bind $(\C, x,
-\mathcal{H})$; a replayed receipt fails the $x$ or $\mathcal{H}$ check, and
-receipts from the mirrored direction reference the wrong commitment. A
-commitment-mirroring opponent is rejected at setup (and could not answer
-shots regardless).
+\mathcal{H})$, so a replayed receipt fails on the $x$ or $\mathcal{H}$ check,
+and a receipt from the opposite direction of play refers to the wrong
+commitment. An opponent that mirrors a commitment is rejected during setup and
+could not answer shots in any case.
 
-\paragraph{Malicious relay.} The relay carries commitments, coin values,
-shot coordinates, and receipts --- all public. It cannot alter any of them
-undetected (verification fails closed), cannot forge outcomes (it cannot
-produce receipts for the pinned image IDs), and learns nothing the
-transcript does not already reveal. Its full power is denial of service.
+\paragraph{Malicious relay.} The relay carries commitments, coin values, shot
+coordinates and receipts, all of which are public. It cannot change any of them
+without detection, since verification fails on a mismatch; it cannot forge
+outcomes, since it cannot produce receipts for the pinned image IDs; and it
+learns nothing that the transcript does not already contain. Its only real
+power is to deny service.
 
-\paragraph{Prover-side side channels.} Proof \emph{contents} leak nothing
-beyond journals, but proving \emph{time} is observable by the opponent. If
-guest control flow depended on ship positions, latency could correlate with
-the secret. All board-touching code in the shared crate is therefore
-written with fixed-shape loops (a legal fleet always occupies exactly 17
-cells) and short-circuit-free boolean accumulation, targeting an
-instruction trace whose length is independent of the witness; we verify
-cycle-count invariance empirically in Section~\ref{sec:eval}. We do not
-extend this claim to physical side channels on the prover's own machine,
-which are out of scope.
+\paragraph{Prover-side side channels.} Proof contents reveal nothing beyond the
+journals, but the time taken to prove is visible to the opponent. If the
+guest's control flow depended on ship positions, this latency could leak
+information about the board. Every routine in the shared crate that reads the
+board is therefore written with fixed-shape loops, using the fact that a legal
+fleet always occupies exactly seventeen cells, and with boolean accumulation
+that does not short-circuit, so that the length of the instruction trace does
+not depend on the witness. Section~\ref{sec:eval} checks this invariance
+empirically. We make no claim about physical side channels on the prover's own
+machine, which lie outside our scope.
 
 \section{Implementation}
 \label{sec:impl}
 
-The system is $\sim$3{,}400 lines of Rust and TypeScript, open source under
-MIT:
+The system comprises roughly 3{,}400 lines of Rust and TypeScript and is open
+source under the MIT license.
 
 \begin{itemize}[noitemsep,topsep=2pt]
-\item \code{core} --- the shared rules crate described above: types, fleet
-      legality, hit/sunk/defeat, canonical encoding. Compiled unchanged into
-      both the native host and the RISC-V guest, so the rules that are
-      \emph{proven} are bit-for-bit the rules the application \emph{plays}.
-      Unit tests include an equivalence suite pitting the fixed-shape
-      implementations against naive references over random boards.
-\item \code{methods/guest} --- the two guest programs (\textsf{commit},
-      \textsf{shot}), $\sim$40 lines each on top of \code{core}; SHA-256
-      uses the zkVM's accelerated implementation.
-\item \code{host} --- prover/verifier library and the \emph{prover agent}:
-      a localhost-only HTTP service that holds the player's board and salt,
-      proves the player's own answers, and verifies the opponent's
-      (receipt, image ID, commitment, shot, and history). The build enables
-      RISC~Zero's \code{disable-dev-mode}; combined with scrubbing
-      \code{RISC0\_DEV\_MODE} from the environment, mock receipts are
-      impossible rather than discouraged. Adversarial integration tests
-      execute every attack from Section~\ref{sec:problem} against the real
-      prover and assert failure.
-\item \code{relay} --- a $\sim$200-line WebSocket forwarder, with no game
-      logic and no RISC~Zero dependency, deployable as a container
-      anywhere; it pairs two connections by room code and shovels bytes.
-\item \code{web} --- a Next.js interface per player (fleet placement,
-      firing, status), which talks only to that player's own agent and to
-      the relay. The Blum coin flip runs here via WebCrypto, in the trust
-      domain of the player it protects.
+\item \code{core}: the shared rules crate discussed above, defining the types,
+      fleet legality, the hit, sunk and defeat predicates, and the canonical
+      encoding. It is compiled unchanged into both the native host and the
+      RISC-V guest, so the rules that are proved are identical to the rules the
+      application plays. Its unit tests include an equivalence suite that checks
+      the fixed-shape implementations against straightforward reference versions
+      over random boards.
+\item \code{methods/guest}: the two guest programs, \textsf{commit} and
+      \textsf{shot}, each about 40 lines on top of \code{core}. SHA-256 uses
+      the zkVM's accelerated implementation.
+\item \code{host}: the prover and verifier library together with the
+      \emph{prover agent}, a localhost-only HTTP service that holds the
+      player's board and salt, proves the player's answers, and verifies the
+      opponent's, checking the receipt, image ID, commitment, shot and history.
+      The build turns on RISC~Zero's \code{disable-dev-mode}, and this together
+      with clearing \code{RISC0\_DEV\_MODE} from the environment makes mock
+      receipts impossible rather than merely discouraged. Adversarial
+      integration tests run each attack from Section~\ref{sec:problem} against
+      the real prover and check that it fails.
+\item \code{relay}: a WebSocket forwarder of about 200 lines, with no game
+      logic and no dependency on RISC~Zero, deployable as a container anywhere.
+      It pairs two connections by room code and passes messages between them.
+\item \code{web}: a Next.js interface for each player, covering fleet
+      placement, firing and status, which communicates only with that player's
+      own agent and with the relay. The Blum coin flip runs here through
+      WebCrypto, within the trust domain of the player it protects.
 \end{itemize}
 
-Two deployment properties are worth noting. First, secrets have a
-one-process blast radius: board and salt exist only inside the player's own
-agent, which binds to \code{127.0.0.1} and answers CORS only for the local
-UI origin. Second, both agents display their guest image IDs
-(\code{/health}); players can compare them out of band, though a mismatch
-is in any case unexploitable --- it merely makes every cross-verification
-fail.
+Two properties of the deployment are worth stating. First, a secret is confined
+to a single process: the board and salt exist only inside the player's own
+agent, which binds to \code{127.0.0.1} and answers CORS requests only from the
+local UI origin. Second, each agent exposes its guest image IDs at
+\code{/health}, so players can compare them out of band, although a mismatch is
+in any event unexploitable and merely causes every cross-verification to fail.
 
 \section{Evaluation}
 \label{sec:eval}
@@ -565,98 +564,96 @@ STARK seal within it.}
 \label{tab:bench}
 \end{table}
 
-\paragraph{Latency and playability.} Setup costs one commit proof per player
-(21\,s, produced concurrently by the two machines) plus a sub-millisecond
-coin flip. Each turn then costs one shot proof (30--47\,s) plus verification
-($\approx$30\,ms) and relay round-trips. Guest execution grows linearly with
-the bound history --- 20.3k user cycles at $|\mathcal{H}| = 0$ versus 101.8k
-at $|\mathcal{H}| = 99$ --- but the prover pads execution into
-power-of-two--sized segments, so proving cost moves only at segment
-boundaries: an empty history fits one $2^{16}$-cycle segment, and all longer
-histories in a maximal game fit two. History binding is therefore close to
-free in proving time, and its journal overhead is under 1\,KB against a
-$\approx$600\,KiB receipt even at $|\mathcal{H}| = 99$; the $O(n^2)$
-transcript overhead discussed in Section~\ref{sec:protocol} is immaterial.
-A typical match ($\approx$60--90 shots in total) spends 30--60 minutes of
-per-move proving spread over the game --- the pace of a relaxed
-correspondence game; every individual wait stays under a minute on this
-hardware, and drops with core count, GPUs, or newer provers
-\cite{zkvmcompilers}.
+\paragraph{Latency and playability.} Setup requires one commit proof per
+player, about 21\,s and produced concurrently on the two machines, plus a coin
+flip that takes under a millisecond. Each subsequent turn requires one shot
+proof, between 30 and 47\,s, along with verification of about 30\,ms and the
+relay round-trips. Guest execution grows linearly in the bound history, from
+20.3k user cycles at $|\mathcal{H}| = 0$ to 101.8k at $|\mathcal{H}| = 99$, but
+the prover pads execution into segments of a power-of-two length, so the cost
+of proving changes only when a segment boundary is crossed: an empty history
+occupies one segment of $2^{16}$ cycles, and every longer history in a full
+game fits within two. Binding the history therefore adds almost nothing to the
+proving time, and its journal overhead stays under 1\,KB against a receipt of
+about 600\,KiB even at $|\mathcal{H}| = 99$, so the $O(n^2)$ transcript overhead
+noted in Section~\ref{sec:protocol} does not matter in practice. A complete
+match of roughly 60 to 90 shots spends between 30 and 60 minutes proving, spread
+across the game at the pace of a correspondence match, and no single wait
+exceeds a minute on this hardware. More cores, a GPU, or a newer prover
+\cite{zkvmcompilers} would reduce these times.
 
-Succinct receipts compress a whole execution to a constant-size seal
-(217.4\,KiB regardless of history) at $1.4$--$1.8\times$ the proving time.
-At this circuit size a composite receipt spans only one or two segments, so
-succinctness buys nothing on the wire; we default to composite receipts and
-note that recursion becomes worthwhile only for aggregating many moves
+Succinct receipts compress an entire execution into a seal of constant size,
+217.4\,KiB regardless of the history, at between 1.4 and 1.8 times the proving
+cost. At this circuit size a composite receipt spans only one or two segments,
+so succinctness saves nothing on the wire, and we use composite receipts by
+default. Recursion becomes worthwhile only when many moves are to be aggregated
 (Section~\ref{sec:limits}).
 
-\paragraph{Witness independence.} Executing the \textsf{shot} guest for a
-fixed shot and 30-shot history across 20 random boards yields execution
-lengths between 45{,}147 and 45{,}173 cycles --- a residual spread of 26
-cycles ($<0.06\%$) from runtime bookkeeping outside the rule functions. The
-spread vanishes in proving: all 20 executions pad to the identical
-$2^{16}$-cycle segment shape, so proving time carries no signal about the
-board. Together with the fixed-shape rule implementations this
-substantiates the side-channel claim of Section~\ref{sec:security}
-empirically rather than by inspection alone.
+\paragraph{Witness independence.} Running the \textsf{shot} guest on a fixed
+shot and a 30-shot history across 20 random boards gives execution lengths
+between 45{,}147 and 45{,}173 cycles, a spread of 26 cycles, below 0.06\%,
+attributable to runtime bookkeeping outside the rule functions. The spread
+disappears once proving begins, since all 20 executions pad to the same
+$2^{16}$-cycle segment and therefore take the same time to prove, leaving no
+signal about the board. With the fixed-shape rule implementations, this gives
+empirical support for the side-channel claim of Section~\ref{sec:security}
+rather than resting on inspection of the code alone.
 
-\paragraph{Comparison with on-chain designs.} A direct quantitative
-comparison is not meaningful (different trust models and hardware), but the
-qualitative trade-off is: on-chain systems pay consensus latency
-(tens of seconds per move on proof-of-work Ethereum in \cite{mit6857})
-and per-move transaction fees, and expose game metadata publicly forever;
-our design pays only local proving time and relay round-trips, keeps the
-transcript private to the players (who may publish it for audit), and gives
-up the chain's built-in remedy for aborts (stake slashing), which we discuss
-next.
+\paragraph{Comparison with on-chain designs.} A direct quantitative comparison
+with on-chain designs would not be meaningful, given the different trust models
+and hardware, but the qualitative difference is clear. On-chain systems pay
+consensus latency, on the order of tens of seconds per move on proof-of-work
+Ethereum in \cite{mit6857}, together with a transaction fee per move, and they
+place game metadata in public permanently. Our design pays only local proving
+time and the relay round-trips, keeps the transcript private to the two
+players, who may publish it if they want it audited, and forgoes the chain's
+built-in penalty for aborting, namely stake slashing, which we turn to next.
 
 \section{Limitations and scope}
 \label{sec:limits}
 
-\paragraph{Aborts.} No zero-knowledge protocol can force a losing player to
-keep producing proofs; a player facing defeat can disconnect. What our
-protocol guarantees is that an abort is \emph{attributable and unfalsifiable}
---- the transcript shows exactly who stopped answering and that every
-answered shot was honest --- and that a completed game's outcome is beyond
-dispute. Remedies (forfeit timers socially, or stakes with slashing if one
-\emph{chooses} to add a chain or an escrow) are orthogonal and composable
-with the protocol as-is.
+\paragraph{Aborts.} No zero-knowledge protocol can compel a losing player to
+keep generating proofs, and a player facing defeat can simply disconnect. What
+the protocol does guarantee is that such an abort is attributable and cannot be
+faked, since the transcript shows who stopped answering and that every answered
+shot was honest, and that the outcome of a completed game is not open to
+dispute. Remedies such as forfeit timers by social convention, or stakes with
+slashing for anyone who chooses to add a chain or an escrow, sit outside the
+protocol and compose with it unchanged.
 
-\paragraph{Trusted rulebook.} Soundness is relative to the correctness of
-the $\sim$300-line rules crate and the zkVM toolchain. The crate is small,
-shared verbatim between play and proof, and tested adversarially; the
-toolchain trust is shared with the entire zkVM ecosystem
-\cite{zkpsurvey}.
+\paragraph{Trusted rulebook.} Soundness is relative to the correctness of the
+roughly 300-line rules crate and of the zkVM toolchain. The crate is small, is
+shared verbatim between play and proof, and is tested adversarially; trust in
+the toolchain is common to the whole zkVM ecosystem \cite{zkpsurvey}.
 
-\paragraph{Metadata.} The protocol hides boards, not behaviour: timing,
-move choices, and disconnects are visible to the opponent and relay, and
-proving-time side channels are mitigated (fixed-shape traces), not
-physically eliminated. Reusing a board or salt across games voids the
-hiding analysis; the implementation generates fresh salts per game and
-warns against board reuse.
+\paragraph{Metadata.} The protocol conceals boards rather than behaviour.
+Timing, choice of moves and disconnections are visible to the opponent and the
+relay, and proving-time side channels are reduced by the fixed-shape traces but
+not physically eliminated. Reusing a board or a salt across games invalidates
+the hiding argument, and the implementation draws a fresh salt for each game and
+advises against reusing boards.
 
-\paragraph{Generality.} The construction generalises directly to any
-two-player, turn-based, hidden-state game whose public state is a
-deterministic function of the (public) move sequence --- e.g.\ Stratego-like
-reveals or fog-of-war variants --- by replacing the rule functions inside
-the guest. Games with hidden \emph{moves}, simultaneous turns, or more than
-two players reintroduce the need for a shared ordering or fairness layer
-and are out of scope.
+\paragraph{Generality.} The construction extends directly to any two-player
+turn-based game with hidden state whose public state is a deterministic function
+of the public sequence of moves, such as Stratego-style reveals or fog-of-war
+variants, by substituting the rule functions inside the guest. Games with
+hidden moves, simultaneous turns, or more than two players bring back the need
+for a shared ordering or a fairness layer and are outside our scope.
 
 \section{Conclusion}
 \label{sec:conclusion}
 
-Deployed zero-knowledge Battleship systems delegate the public half of the
-game --- history, turns, termination --- to a blockchain. We showed that
-deleting the chain naively breaks exactly that half (unverifiable sunk
-reports; the immortal fleet), and that for two-player turn-based games the
-fix requires no consensus at all: the verifier already owns the canonical
-history, and binding it into each proof's public output --- together with
-computing the win condition inside the proof --- yields self-contained
-receipts, auditably terminating matches, and a deployment consisting of
-nothing but the two players and a dumb pipe. The implementation is practical
-on laptop CPUs and open source; we hope it serves as a minimal,
-fully-worked pattern for trustless hidden-state games off-chain.
+Deployed zero-knowledge Battleship systems hand the public half of the game,
+its history, turns and termination, to a blockchain. We have shown that removing
+the chain without more care breaks exactly that half, producing unverifiable
+sunk reports and the immortal fleet, and that for two-player turn-based games no
+consensus is needed to repair it. The verifier already holds the canonical
+history, and binding it into each proof's public output, together with computing
+the win condition inside the proof, yields self-contained receipts, matches that
+terminate verifiably, and a deployment that consists of nothing more than the
+two players and a message relay. The implementation runs on laptop CPUs and is
+open source, and we intend it as a compact and complete example of a trustless
+hidden-state game built without a chain.
 
 \subsection*{Artifact}
 
